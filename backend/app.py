@@ -4,12 +4,28 @@ from flask_cors import CORS
 
 from dotenv import load_dotenv
 from services.weather_service import get_live_weather
+import joblib
+import numpy as np
+
 
 load_dotenv()
 
 
 app = Flask(__name__)
 CORS(app) 
+
+
+# Load trained model
+model = joblib.load("model.pkl")
+
+# Input: 3 features
+X = np.array([[x1, x2, x3]])
+
+output = model.predict(X)
+
+print("Model output:", output[0])
+
+
 
 @app.route("/health", methods=["GET"])
 def health():
