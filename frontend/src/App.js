@@ -3,7 +3,7 @@ import "./App.css";
 
 const EnergyPlot = ({ data }) => {
   const items = [
-    { label: "Generated", value: data.generated_power, color: "#38bdf8" },
+    { label: "Generated", value: data.total_energy_generated, color: "#38bdf8" },
     { label: "Stored", value: data.battery.energy_to_battery, color: "#22c55e" },
     { label: "Used", value: data.battery.energy_from_battery, color: "#f97316" },
     { label: "Unmet", value: data.battery.unmet_energy, color: "#ef4444" }
@@ -25,7 +25,7 @@ const EnergyPlot = ({ data }) => {
               }}
             />
           </div>
-          <strong>{item.value.toFixed(2)} kW</strong>
+          <strong>{item.value.toFixed(2)} kWh</strong>
         </div>
       ))}
     </div>
@@ -36,7 +36,7 @@ function App() {
   const [showWelcome, setShowWelcome] = useState(true);
 
   useEffect(() => {
-    const t = setTimeout(() => setShowWelcome(false), 2200);
+    const t = setTimeout(() => setShowWelcome(false), 2000);
     return () => clearTimeout(t);
   }, []);
 
@@ -46,7 +46,8 @@ function App() {
     maxGridPower: "",
     maxBattery: "",
     currentBattery: "",
-    consumption: ""
+    consumption: "",
+    duration: ""
   });
 
   const [result, setResult] = useState(null);
@@ -71,7 +72,8 @@ function App() {
           max_grid_power: Number(form.maxGridPower),
           max_battery_capacity: Number(form.maxBattery),
           current_battery_capacity: Number(form.currentBattery),
-          energy_consumption: Number(form.consumption)
+          energy_consumption: Number(form.consumption),
+          duration_hours: Number(form.duration)
         })
       });
 
@@ -109,10 +111,11 @@ function App() {
           <input name="maxGridPower" placeholder="Max Grid Power (kW)" onChange={update} />
           <input name="maxBattery" placeholder="Max Battery Capacity (kWh)" onChange={update} />
           <input name="currentBattery" placeholder="Current Battery (kWh)" onChange={update} />
-          <input name="consumption" placeholder="Energy Consumption (kW)" onChange={update} />
+          <input name="consumption" placeholder="Consumption per Hour (kWh)" onChange={update} />
+          <input name="duration" placeholder="Duration (hours)" onChange={update} />
 
           <button onClick={predict} disabled={loading}>
-            {loading ? "Computing…" : "Run Simulation"}
+            {loading ? "Simulating…" : "Run Simulation"}
           </button>
 
           {error && <div className="error">{error}</div>}
@@ -126,8 +129,8 @@ function App() {
           {result && (
             <>
               <div className="stat big">
-                <span>Generated Power</span>
-                <strong>{result.generated_power.toFixed(2)} kW</strong>
+                <span>Total Energy Generated</span>
+                <strong>{result.total_energy_generated.toFixed(2)} kWh</strong>
               </div>
 
               <div className="stat">

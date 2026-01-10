@@ -1,4 +1,3 @@
-
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import joblib
@@ -16,10 +15,10 @@ MODEL_PATH = os.path.join(BASE_DIR, "model.pkl")
 model = joblib.load(MODEL_PATH)
 
 OPEN_METEO_URL = "https://api.open-meteo.com/v1/forecast"
-
 SYSTEM_LOSS = 0.15
 
-def get_current_weather(lat, lon):
+
+def get_hourly_weather(lat, lon, hours):
     params = {
         "latitude": lat,
         "longitude": lon,
@@ -27,25 +26,30 @@ def get_current_weather(lat, lon):
         "timezone": "auto"
     }
 
-    response = requests.get(OPEN_METEO_URL, params=params, timeout=10)
-    response.raise_for_status()
+    res = requests.get(OPEN_METEO_URL, params=params, timeout=10)
+    res.raise_for_status()
 
-    data = response.json()
-    hourly = data["hourly"]
-
+    hourly = res.json()["hourly"]
     times = hourly["time"]
+
     now_hour = datetime.now().strftime("%Y-%m-%dT%H:00")
-    idx = times.index(now_hour) if now_hour in times else 0
+    start_idx = times.index(now_hour) if now_hour in times else 0
 
-    return {
-        "temperature": hourly["temperature_2m"][idx],
-        "direct": hourly["direct_normal_irradiance"][idx],
-        "diffuse": hourly["diffuse_radiation"][idx]
-    }
+    weather = []
+    for i in range(start_idx, start_idx + hours):
+        weather.append({
+            "temperature": hourly["temperature_2m"][i],
+            "direct": hourly["direct_normal_irradiance"][i],
+            "diffuse": hourly["diffuse_radiation"][i]
+        })
 
-@app.route("/health", methods=["GET"])
+    return weather
+
+
+@app.route("/health")
 def health():
     return jsonify({"status": "backend alive"})
+
 
 @app.route("/predict", methods=["POST"])
 def predict():
@@ -57,65 +61,62 @@ def predict():
         "max_grid_power",
         "max_battery_capacity",
         "current_battery_capacity",
-        "energy_consumption"
+        "energy_consumption",
+        "duration_hours"
     ]
 
-    for key in required:
-        if key not in data:
-            return jsonify({"error": f"{key} is required"}), 400
+    for r in required:
+        if r not in data:
+            return jsonify({"error": f"{r} missing"}), 400
 
     lat = float(data["latitude"])
     lon = float(data["longitude"])
-    max_grid_power = float(data["max_grid_power"])
-    max_battery_capacity = float(data["max_battery_capacity"])
+    max_grid_power = float(data["max_grid_power"])      # kW
+    max_battery_capacity = float(data["max_battery_capacity"])  # kWh
     current_battery_capacity = float(data["current_battery_capacity"])
-    energy_consumption = float(data["energy_consumption"])
+    energy_consumption = float(data["energy_consumption"])  # kWh per hour
+    duration_hours = int(data["duration_hours"])
 
-    weather = get_current_weather(lat, lon)
+    weather_hours = get_hourly_weather(lat, lon, duration_hours)
 
-    direct_norm = weather["direct"] / 1000.0
-    diffuse_norm = weather["diffuse"] / 1000.0
-    temperature = weather["temperature"]
-
-    X = np.array([[direct_norm, diffuse_norm, temperature]])
-
-    raw_prediction = float(model.predict(X)[0])
-    power_fraction = max(0.0, min(1.0, raw_prediction))
-    effective_power_fraction = power_fraction * (1 - SYSTEM_LOSS)
-
-    generated_power = effective_power_fraction * max_grid_power
-    net_power = generated_power - energy_consumption
-
+    total_energy_generated = 0.0
     energy_to_battery = 0.0
     energy_from_battery = 0.0
     unmet_energy = 0.0
-    status_message = "Battery idle"
 
-    if net_power > 0:
-        available_space = max_battery_capacity - current_battery_capacity
-        energy_to_battery = min(net_power, available_space)
-        current_battery_capacity += energy_to_battery
+    for hour in weather_hours:
+        X = np.array([[
+            hour["direct"] / 1000.0,
+            hour["diffuse"] / 1000.0,
+            hour["temperature"]
+        ]])
 
-        if energy_to_battery > 0:
-            status_message = f"{energy_to_battery:.2f} kWh can be stored in battery"
+        fraction = float(model.predict(X)[0])
+        fraction = max(0.0, min(1.0, fraction))
+        fraction *= (1 - SYSTEM_LOSS)
+
+        generated_power = fraction * max_grid_power      # kW
+        generated_energy = generated_power * 1.0         # 1 hour → kWh
+
+        total_energy_generated += generated_energy
+
+        net_energy = generated_energy - energy_consumption
+
+        if net_energy > 0:
+            space = max_battery_capacity - current_battery_capacity
+            stored = min(net_energy, space)
+            current_battery_capacity += stored
+            energy_to_battery += stored
         else:
-            status_message = "Battery full, excess energy cannot be stored"
+            needed = abs(net_energy)
+            drawn = min(needed, current_battery_capacity)
+            current_battery_capacity -= drawn
+            energy_from_battery += drawn
+            unmet_energy += needed - drawn
 
-    elif net_power < 0:
-        required_energy = abs(net_power)
-        energy_from_battery = min(required_energy, current_battery_capacity)
-        current_battery_capacity -= energy_from_battery
-        unmet_energy = required_energy - energy_from_battery
-
-        if energy_from_battery > 0:
-            status_message = f"{energy_from_battery:.2f} kWh must be discharged from battery"
-        else:
-            status_message = "Battery empty, unable to meet demand"
-
-    current_battery_capacity = max(
-        0.0,
-        min(current_battery_capacity, max_battery_capacity)
-    )
+        current_battery_capacity = max(
+            0.0, min(current_battery_capacity, max_battery_capacity)
+        )
 
     battery_percentage = (
         current_battery_capacity / max_battery_capacity
@@ -123,8 +124,8 @@ def predict():
     )
 
     return jsonify({
-        "generated_power": generated_power,
-        "effective_power_fraction": effective_power_fraction,
+        "duration_hours": duration_hours,
+        "total_energy_generated": total_energy_generated,
         "battery": {
             "current_capacity": current_battery_capacity,
             "max_capacity": max_battery_capacity,
@@ -132,7 +133,7 @@ def predict():
             "energy_to_battery": energy_to_battery,
             "energy_from_battery": energy_from_battery,
             "unmet_energy": unmet_energy,
-            "status_message": status_message
+            "status_message": "Simulation completed"
         }
     })
 
