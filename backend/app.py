@@ -4,7 +4,7 @@ import joblib
 import numpy as np
 import os
 import requests
-from datetime import datetime
+from datetime import datetime, timedelta
 
 app = Flask(__name__)
 CORS(app)
@@ -32,23 +32,22 @@ def get_hourly_weather(lat, lon, hours):
     hourly = res.json()["hourly"]
     times = hourly["time"]
 
-    now_hour = datetime.now().strftime("%Y-%m-%dT%H:00")
-    start_idx = times.index(now_hour) if now_hour in times else 0
+    now = datetime.now().replace(minute=0, second=0, microsecond=0)
+    now_str = now.strftime("%Y-%m-%dT%H:00")
+    start_idx = times.index(now_str) if now_str in times else 0
 
     weather = []
+    labels = []
+
     for i in range(start_idx, start_idx + hours):
         weather.append({
             "temperature": hourly["temperature_2m"][i],
             "direct": hourly["direct_normal_irradiance"][i],
             "diffuse": hourly["diffuse_radiation"][i]
         })
+        labels.append((now + timedelta(hours=len(labels))).strftime("%H:%M"))
 
-    return weather
-
-
-@app.route("/health")
-def health():
-    return jsonify({"status": "backend alive"})
+    return weather, labels
 
 
 @app.route("/predict", methods=["POST"])
@@ -71,18 +70,21 @@ def predict():
 
     lat = float(data["latitude"])
     lon = float(data["longitude"])
-    max_grid_power = float(data["max_grid_power"])      # kW
-    max_battery_capacity = float(data["max_battery_capacity"])  # kWh
+    max_grid_power = float(data["max_grid_power"])
+    max_battery_capacity = float(data["max_battery_capacity"])
     current_battery_capacity = float(data["current_battery_capacity"])
-    energy_consumption = float(data["energy_consumption"])  # kWh per hour
+    energy_consumption = float(data["energy_consumption"])
     duration_hours = int(data["duration_hours"])
 
-    weather_hours = get_hourly_weather(lat, lon, duration_hours)
+    weather_hours, labels = get_hourly_weather(lat, lon, duration_hours)
 
     total_energy_generated = 0.0
     energy_to_battery = 0.0
     energy_from_battery = 0.0
     unmet_energy = 0.0
+
+    hourly_generated = []
+    hourly_battery = []
 
     for hour in weather_hours:
         X = np.array([[
@@ -95,20 +97,19 @@ def predict():
         fraction = max(0.0, min(1.0, fraction))
         fraction *= (1 - SYSTEM_LOSS)
 
-        generated_power = fraction * max_grid_power      # kW
-        generated_energy = generated_power * 1.0         # 1 hour → kWh
-
+        generated_energy = fraction * max_grid_power
         total_energy_generated += generated_energy
+        hourly_generated.append(generated_energy)
 
-        net_energy = generated_energy - energy_consumption
+        net = generated_energy - energy_consumption
 
-        if net_energy > 0:
+        if net > 0:
             space = max_battery_capacity - current_battery_capacity
-            stored = min(net_energy, space)
+            stored = min(net, space)
             current_battery_capacity += stored
             energy_to_battery += stored
         else:
-            needed = abs(net_energy)
+            needed = abs(net)
             drawn = min(needed, current_battery_capacity)
             current_battery_capacity -= drawn
             energy_from_battery += drawn
@@ -118,6 +119,8 @@ def predict():
             0.0, min(current_battery_capacity, max_battery_capacity)
         )
 
+        hourly_battery.append(current_battery_capacity)
+
     battery_percentage = (
         current_battery_capacity / max_battery_capacity
         if max_battery_capacity > 0 else 0.0
@@ -126,6 +129,9 @@ def predict():
     return jsonify({
         "duration_hours": duration_hours,
         "total_energy_generated": total_energy_generated,
+        "hour_labels": labels,
+        "hourly_generated_energy": hourly_generated,
+        "hourly_battery_level": hourly_battery,
         "battery": {
             "current_capacity": current_battery_capacity,
             "max_capacity": max_battery_capacity,

@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import "./App.css";
 
+/* ---------- BAR SUMMARY (UNCHANGED) ---------- */
 const EnergyPlot = ({ data }) => {
   const items = [
     { label: "Generated", value: data.total_energy_generated, color: "#38bdf8" },
@@ -32,14 +33,71 @@ const EnergyPlot = ({ data }) => {
   );
 };
 
+/* ---------- LINE CHART WITH TRUE HOUR AXIS ---------- */
+const LineChartWithAxes = ({ data, color, yLabel }) => {
+  const n = data.length;
+  const maxY = Math.max(...data, 1);
+
+  const pad = 12;
+  const W = 100 - pad * 2;
+  const H = 100 - pad * 2;
+
+  const points = data.map((v, i) => {
+    const x = pad + (i / (n - 1)) * W;
+    const y = pad + H - (v / maxY) * H;
+    return `${x},${y}`;
+  }).join(" ");
+
+  return (
+    <svg viewBox="0 0 100 100" className="line-chart">
+      {/* Grid + axes */}
+      <line x1={pad} y1={pad} x2={pad} y2={pad + H} />
+      <line x1={pad} y1={pad + H} x2={pad + W} y2={pad + H} />
+
+      {/* Y-axis ticks */}
+      {[0, 0.5, 1].map((t, i) => {
+        const y = pad + H - t * H;
+        return (
+          <g key={i}>
+            <line x1={pad - 1} y1={y} x2={pad} y2={y} />
+            <text x={pad - 2} y={y + 1.5} textAnchor="end">
+              {(t * maxY).toFixed(1)}
+            </text>
+          </g>
+        );
+      })}
+
+      {/* X-axis ticks: ONE PER HOUR */}
+      {data.map((_, i) => {
+        const x = pad + (i / (n - 1)) * W;
+        return (
+          <g key={i}>
+            <line x1={x} y1={pad + H} x2={x} y2={pad + H + 1} />
+            <text x={x} y={pad + H + 6} textAnchor="middle">
+              H{i + 1}
+            </text>
+          </g>
+        );
+      })}
+
+      {/* Line */}
+      <polyline
+        fill="none"
+        stroke={color}
+        strokeWidth="2"
+        points={points}
+      />
+
+      {/* Title */}
+      <text x="50" y="6" textAnchor="middle">
+        {yLabel}
+      </text>
+    </svg>
+  );
+};
+
+/* ---------- MAIN APP ---------- */
 function App() {
-  const [showWelcome, setShowWelcome] = useState(true);
-
-  useEffect(() => {
-    const t = setTimeout(() => setShowWelcome(false), 2000);
-    return () => clearTimeout(t);
-  }, []);
-
   const [form, setForm] = useState({
     latitude: "",
     longitude: "",
@@ -52,13 +110,11 @@ function App() {
 
   const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
-  const [loading, setLoading] = useState(false);
 
   const update = (e) =>
     setForm({ ...form, [e.target.name]: e.target.value });
 
   const predict = async () => {
-    setLoading(true);
     setError(null);
     setResult(null);
 
@@ -82,83 +138,43 @@ function App() {
       setResult(data);
     } catch (e) {
       setError(e.message);
-    } finally {
-      setLoading(false);
     }
   };
-
-  if (showWelcome) {
-    return (
-      <div className="welcome">
-        <div className="welcome-box">
-          <h1>Solar Energy Dashboard</h1>
-          <p>Initializing system intelligence…</p>
-        </div>
-      </div>
-    );
-  }
 
   return (
     <div className="dashboard fade-in">
       <header className="topbar">Solar Energy Dashboard</header>
 
       <div className="layout">
-        <div className="panel input slide-in-left">
-          <h2>System Inputs</h2>
-
+        <div className="panel input">
           <input name="latitude" placeholder="Latitude" onChange={update} />
           <input name="longitude" placeholder="Longitude" onChange={update} />
           <input name="maxGridPower" placeholder="Max Grid Power (kW)" onChange={update} />
-          <input name="maxBattery" placeholder="Max Battery Capacity (kWh)" onChange={update} />
+          <input name="maxBattery" placeholder="Max Battery (kWh)" onChange={update} />
           <input name="currentBattery" placeholder="Current Battery (kWh)" onChange={update} />
-          <input name="consumption" placeholder="Consumption per Hour (kWh)" onChange={update} />
+          <input name="consumption" placeholder="Consumption / hr (kWh)" onChange={update} />
           <input name="duration" placeholder="Duration (hours)" onChange={update} />
 
-          <button onClick={predict} disabled={loading}>
-            {loading ? "Simulating…" : "Run Simulation"}
-          </button>
-
+          <button onClick={predict}>Run Simulation</button>
           {error && <div className="error">{error}</div>}
         </div>
 
-        <div className="panel output slide-in-right">
-          <h2>System Status</h2>
-
-          {!result && <div className="placeholder">Awaiting input</div>}
-
+        <div className="panel output">
           {result && (
             <>
-              <div className="stat big">
-                <span>Total Energy Generated</span>
-                <strong>{result.total_energy_generated.toFixed(2)} kWh</strong>
-              </div>
-
-              <div className="stat">
-                <span>Battery Level</span>
-                <strong>{(result.battery.percentage * 100).toFixed(1)}%</strong>
-              </div>
-
-              <div className="stat">
-                <span>Status</span>
-                <strong>{result.battery.status_message}</strong>
-              </div>
-
-              <div className="grid">
-                <div>
-                  <span>Stored</span>
-                  <strong>{result.battery.energy_to_battery.toFixed(2)} kWh</strong>
-                </div>
-                <div>
-                  <span>Used</span>
-                  <strong>{result.battery.energy_from_battery.toFixed(2)} kWh</strong>
-                </div>
-                <div>
-                  <span>Unmet</span>
-                  <strong>{result.battery.unmet_energy.toFixed(2)} kWh</strong>
-                </div>
-              </div>
-
               <EnergyPlot data={result} />
+
+              <LineChartWithAxes
+                data={result.hourly_generated_energy}
+                yLabel="Hourly Energy (kWh)"
+                color="#38bdf8"
+              />
+
+              <LineChartWithAxes
+                data={result.hourly_battery_level}
+                yLabel="Battery Level (kWh)"
+                color="#22c55e"
+              />
             </>
           )}
         </div>
