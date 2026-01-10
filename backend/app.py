@@ -51,23 +51,31 @@ def health():
 def predict():
     data = request.get_json()
 
-    lat = data.get("latitude")
-    lon = data.get("longitude")
+    required = [
+        "latitude",
+        "longitude",
+        "max_grid_power",
+        "max_battery_capacity",
+        "current_battery_capacity",
+        "energy_consumption"
+    ]
 
-    if lat is None or lon is None:
-        return jsonify({"error": "latitude and longitude required"}), 400
+    for key in required:
+        if key not in data:
+            return jsonify({"error": f"{key} is required"}), 400
 
-    lat = float(lat)
-    lon = float(lon)
+    lat = float(data["latitude"])
+    lon = float(data["longitude"])
+    max_grid_power = float(data["max_grid_power"])
+    max_battery_capacity = float(data["max_battery_capacity"])
+    current_battery_capacity = float(data["current_battery_capacity"])
+    energy_consumption = float(data["energy_consumption"])
 
     weather = get_current_weather(lat, lon)
 
-    direct_raw = weather["direct"]
-    diffuse_raw = weather["diffuse"]
+    direct_norm = weather["direct"] / 1000.0
+    diffuse_norm = weather["diffuse"] / 1000.0
     temperature = weather["temperature"]
-
-    direct_norm = direct_raw / 1000.0
-    diffuse_norm = diffuse_raw / 1000.0
 
     X = np.array([[direct_norm, diffuse_norm, temperature]])
 
@@ -75,16 +83,59 @@ def predict():
     power_fraction = max(0.0, min(1.0, raw_prediction))
     effective_power_fraction = power_fraction * (1 - SYSTEM_LOSS)
 
+    generated_power = effective_power_fraction * max_grid_power
+    net_power = generated_power - energy_consumption
+
+    energy_to_battery = 0.0
+    energy_from_battery = 0.0
+    unmet_energy = 0.0
+    status_message = "Battery idle"
+
+    if net_power > 0:
+        available_space = max_battery_capacity - current_battery_capacity
+        energy_to_battery = min(net_power, available_space)
+        current_battery_capacity += energy_to_battery
+
+        if energy_to_battery > 0:
+            status_message = f"{energy_to_battery:.2f} kWh can be stored in battery"
+        else:
+            status_message = "Battery full, excess energy cannot be stored"
+
+    elif net_power < 0:
+        required_energy = abs(net_power)
+        energy_from_battery = min(required_energy, current_battery_capacity)
+        current_battery_capacity -= energy_from_battery
+        unmet_energy = required_energy - energy_from_battery
+
+        if energy_from_battery > 0:
+            status_message = f"{energy_from_battery:.2f} kWh must be discharged from battery"
+        else:
+            status_message = "Battery empty, unable to meet demand"
+
+    current_battery_capacity = max(
+        0.0,
+        min(current_battery_capacity, max_battery_capacity)
+    )
+
+    battery_percentage = (
+        current_battery_capacity / max_battery_capacity
+        if max_battery_capacity > 0 else 0.0
+    )
+
     return jsonify({
-        "inputs": {
-            "temperature_c": temperature,
-            "direct_irradiance_wm2": direct_raw,
-            "diffuse_irradiance_wm2": diffuse_raw
-        },
-        "raw_model_output": raw_prediction,
-        "power_fraction": power_fraction,
-        "effective_power_fraction": effective_power_fraction
+        "generated_power": generated_power,
+        "effective_power_fraction": effective_power_fraction,
+        "battery": {
+            "current_capacity": current_battery_capacity,
+            "max_capacity": max_battery_capacity,
+            "percentage": battery_percentage,
+            "energy_to_battery": energy_to_battery,
+            "energy_from_battery": energy_from_battery,
+            "unmet_energy": unmet_energy,
+            "status_message": status_message
+        }
     })
+
 
 if __name__ == "__main__":
     app.run(debug=True)
